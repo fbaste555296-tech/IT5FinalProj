@@ -1,169 +1,275 @@
 import sys
-import sqlite3
 import os
-from PyQt5.QtWidgets import (
-    QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout,
-    QHBoxLayout, QMessageBox, QTableWidget, QTableWidgetItem, QDateEdit
-)
-from PyQt5.QtCore import QDate
-from datetime import datetime
+import sqlite3
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QWidget, QLabel,
+                             QPushButton, QInputDialog, QMessageBox, QDialog, QFormLayout,
+                             QComboBox, QDateEdit, QTimeEdit, QLineEdit)
+from PyQt5.QtCore import Qt, QDate, QTime
 
+class BookAppointmentDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Book Appointment")
+        self.setFixedSize(300, 250)
+        self.initUI()
 
-class ClinicApp(QWidget):
+    def initUI(self):
+        layout = QFormLayout(self)
+
+        # Name field
+        self.name_edit = QLineEdit()
+        layout.addRow("Enter your name:", self.name_edit)
+
+        # Doctor combo box
+        self.doctor_combo = QComboBox()
+        self.doctor_combo.addItems(["Doctor A", "Doctor B", "Doctor C", "Doctor D"])
+        layout.addRow("Choose doctor:", self.doctor_combo)
+
+        # Date edit (calendar-like picker)
+        self.date_edit = QDateEdit()
+        self.date_edit.setDate(QDate.currentDate())  # Default to today
+        self.date_edit.setCalendarPopup(True)  # Enables calendar popup
+        self.date_edit.setDisplayFormat("yyyy-MM-dd")  # Format like 2025-10-10
+        layout.addRow("Enter date:", self.date_edit)
+
+        # Time edit
+        self.time_edit = QTimeEdit()
+        self.time_edit.setDisplayFormat("hh:mm AP")  # Format like 10:00 AM
+        self.time_edit.setTime(QTime(9, 0))  # Default to 9:00 AM
+        layout.addRow("Enter time:", self.time_edit)
+
+        # Buttons
+        buttons = QWidget()
+        button_layout = QVBoxLayout(buttons)
+        ok_btn = QPushButton("Book")
+        ok_btn.clicked.connect(self.accept)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(ok_btn)
+        button_layout.addWidget(cancel_btn)
+        layout.addRow(buttons)
+
+    def get_data(self):
+        return (
+            self.name_edit.text(),
+            self.doctor_combo.currentText(),
+            self.date_edit.date().toString("yyyy-MM-dd"),
+            self.time_edit.time().toString("hh:mm AP")
+        )
+
+class ClinicApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Clinic Appointment System")
-        self.setGeometry(200, 200, 600, 400)
-
-        # --- Database connection ---
+        # Database setup
         self.db_path = os.path.join(os.path.dirname(__file__), "clinic.db")
         self.conn = sqlite3.connect(self.db_path)
         self.cursor = self.conn.cursor()
 
-        # Create table if not exists
+        # Create table if not exists (core schema)
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS appointments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT,
                 doctor TEXT,
                 date TEXT,
-                time TEXT
+                time TEXT,
+                status TEXT DEFAULT 'Booked',
+                payment TEXT DEFAULT 'Unpaid'
             )
         """)
         self.conn.commit()
 
-        # --- Input fields ---
-        self.name_label = QLabel("Patient Name:")
-        self.name_input = QLineEdit()
+        # Automatic migration: Add missing columns if they don't exist (for old DBs)
+        self.migrate_schema()
 
-        self.doctor_label = QLabel("Doctor:")
-        self.doctor_input = QLineEdit()
+        self.initUI()
+        # Close DB on window close
+        self.destroyed.connect(self.close_db)
 
-        self.date_label = QLabel("Date:")
-        self.date_input = QDateEdit()
-        self.date_input.setCalendarPopup(True)  # enable calendar
-        self.date_input.setDate(QDate.currentDate())  # default today
-
-        self.time_label = QLabel("Time (HH:MM AM/PM):")
-        self.time_input = QLineEdit()
-        self.time_input.editingFinished.connect(self.format_time)  # format when done typing
-
-        # --- Buttons ---
-        self.book_button = QPushButton("Book Appointment")
-        self.view_button = QPushButton("View Appointments")
-        self.cancel_button = QPushButton("Cancel Appointment")
-
-        self.book_button.clicked.connect(self.book_appointment)
-        self.view_button.clicked.connect(self.view_appointments)
-        self.cancel_button.clicked.connect(self.cancel_appointment)
-
-        # --- Table for appointments ---
-        self.table = QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["ID", "Name", "Doctor", "Date", "Time"])
-        self.table.setColumnHidden(0, True)  # Hide ID column
-
-        # --- Layout ---
-        layout = QVBoxLayout()
-        layout.addWidget(self.name_label)
-        layout.addWidget(self.name_input)
-        layout.addWidget(self.doctor_label)
-        layout.addWidget(self.doctor_input)
-        layout.addWidget(self.date_label)
-        layout.addWidget(self.date_input)
-        layout.addWidget(self.time_label)
-        layout.addWidget(self.time_input)
-
-        hlayout = QHBoxLayout()
-        hlayout.addWidget(self.book_button)
-        hlayout.addWidget(self.view_button)
-        hlayout.addWidget(self.cancel_button)
-        layout.addLayout(hlayout)
-
-        layout.addWidget(self.table)
-        self.setLayout(layout)
-
-    def format_time(self):
-        """Format time input to HH:MM AM/PM if valid"""
-        text = self.time_input.text().strip()
-        if not text:
-            return
+    def migrate_schema(self):
+        """Check and add missing columns (status and payment) if needed."""
         try:
-            # Try parsing user input
-            parsed_time = datetime.strptime(text, "%H:%M")  # e.g. 14:30
-        except ValueError:
-            try:
-                parsed_time = datetime.strptime(text, "%I:%M %p")  # e.g. 2:30 PM
-            except ValueError:
-                QMessageBox.warning(self, "Invalid Time", "Please enter time in HH:MM or HH:MM AM/PM format.")
-                self.time_input.clear()
-                return
+            # Check if status column exists
+            self.cursor.execute("PRAGMA table_info(appointments)")
+            columns = [col[1] for col in self.cursor.fetchall()]
+            
+            if 'status' not in columns:
+                self.cursor.execute("ALTER TABLE appointments ADD COLUMN status TEXT DEFAULT 'Booked'")
+                self.conn.commit()
+                print("Added 'status' column.")  # For debugging; remove if unwanted
+            
+            if 'payment' not in columns:
+                self.cursor.execute("ALTER TABLE appointments ADD COLUMN payment TEXT DEFAULT 'Unpaid'")
+                self.conn.commit()
+                print("Added 'payment' column.")  # For debugging; remove if unwanted
+                
+        except sqlite3.Error as e:
+            print(f"Migration error: {e}")  # Log for debugging
+            # Optionally show a message: QMessageBox.warning(self, "DB Migration", f"Schema update failed: {e}")
 
-        # Format properly
-        self.time_input.setText(parsed_time.strftime("%I:%M %p"))
+    def close_db(self):
+        if self.conn:
+            self.conn.close()
+
+    def initUI(self):
+        self.setWindowTitle("Clinic Appointment System")
+        self.setFixedSize(350, 400)
+
+        # Central widget and layout
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        layout = QVBoxLayout(central_widget)
+
+        # Title label
+        title_label = QLabel("==== Clinic Appointment System ====", self)
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 10px;")
+        layout.addWidget(title_label)
+
+        # Buttons for each option
+        book_btn = QPushButton("1. Book Appointment")
+        book_btn.clicked.connect(self.book_appointment)
+        book_btn.setFixedHeight(50)
+        layout.addWidget(book_btn)
+
+        checkin_btn = QPushButton("2. Check-in")
+        checkin_btn.clicked.connect(self.check_in)
+        checkin_btn.setFixedHeight(50)
+        layout.addWidget(checkin_btn)
+
+        consult_btn = QPushButton("3. Consultation")
+        consult_btn.clicked.connect(self.consultation)
+        consult_btn.setFixedHeight(50)
+        layout.addWidget(consult_btn)
+
+        billing_btn = QPushButton("4. Billing (Cash Only)")
+        billing_btn.clicked.connect(self.billing)
+        billing_btn.setFixedHeight(50)
+        layout.addWidget(billing_btn)
+
+        show_btn = QPushButton("5. Show All Appointments")
+        show_btn.clicked.connect(self.show_appointments)
+        show_btn.setFixedHeight(50)
+        layout.addWidget(show_btn)
+
+        exit_btn = QPushButton("6. Exit")
+        exit_btn.clicked.connect(self.close)
+        exit_btn.setFixedHeight(50)
+        exit_btn.setStyleSheet("background-color: red; color: white;")
+        layout.addWidget(exit_btn)
+
+        # Add stretch to center the content
+        layout.addStretch()
 
     def book_appointment(self):
-        name = self.name_input.text()
-        doctor = self.doctor_input.text()
-        date = self.date_input.date().toString("yyyy-MM-dd")  # Get selected date
-        time = self.time_input.text()
+        dialog = BookAppointmentDialog(self)
+        if dialog.exec_() == QDialog.Accepted:
+            name, doctor, date, time = dialog.get_data()
+            if not name or not doctor or not date or not time:
+                QMessageBox.warning(self, "Warning", "Please fill in all fields.")
+                return
 
-        if not name or not doctor or not time:
-            QMessageBox.warning(self, "Error", "All fields are required!")
+            try:
+                self.cursor.execute("""
+                    INSERT INTO appointments (name, doctor, date, time)
+                    VALUES (?, ?, ?, ?)
+                """, (name, doctor, date, time))  # Let defaults handle status/payment
+                self.conn.commit()
+                QMessageBox.information(self, "Success", f" Appointment booked for {name} with {doctor} on {date} at {time}")
+            except sqlite3.Error as e:
+                QMessageBox.critical(self, "Database Error", f"Failed to book appointment: {str(e)}")
+
+    def check_in(self):
+        name, ok = QInputDialog.getText(self, "Patient Check-in", "Enter your name:")
+        if not ok or not name:
             return
+        try:
+            self.cursor.execute("""
+                SELECT id FROM appointments
+                WHERE LOWER(name) = LOWER(?) AND status = 'Booked'
+            """, (name,))
+            result = self.cursor.fetchone()
+            if result:
+                appt_id = result[0]
+                self.cursor.execute("""
+                    UPDATE appointments SET status = 'Checked-in'
+                    WHERE id = ?
+                """, (appt_id,))
+                self.conn.commit()
+                QMessageBox.information(self, "Success", f"{name}, you are now checked in.")
+            else:
+                QMessageBox.warning(self, "Warning", " Appointment not found or already checked in.")
+        except sqlite3.Error as e:
+            QMessageBox.critical(self, "Database Error", f"Failed to check in: {str(e)}")
 
-        self.cursor.execute("INSERT INTO appointments (name, doctor, date, time) VALUES (?, ?, ?, ?)",
-                            (name, doctor, date, time))
-        self.conn.commit()
-        QMessageBox.information(self, "Success", "Appointment booked successfully!")
-        self.clear_inputs()
-        self.view_appointments()
-
-    def view_appointments(self):
-        self.cursor.execute("SELECT id, name, doctor, date, time FROM appointments")
-        rows = self.cursor.fetchall()
-
-        self.table.setRowCount(len(rows))
-        for i, row in enumerate(rows):
-            for j, val in enumerate(row):
-                self.table.setItem(i, j, QTableWidgetItem(str(val)))
-
-    def cancel_appointment(self):
-        selected_row = self.table.currentRow()
-        if selected_row < 0:
-            QMessageBox.warning(self, "Error", "Please select an appointment to cancel!")
+    def consultation(self):
+        name, ok = QInputDialog.getText(self, "Consultation", "Enter your name:")
+        if not ok or not name:
             return
+        try:
+            self.cursor.execute("""
+                SELECT id FROM appointments
+                WHERE LOWER(name) = LOWER(?) AND status = 'Checked-in'
+            """, (name,))
+            result = self.cursor.fetchone()
+            if result:
+                appt_id = result[0]
+                self.cursor.execute("""
+                    UPDATE appointments SET status = 'Consulted'
+                    WHERE id = ?
+                """, (appt_id,))
+                self.conn.commit()
+                QMessageBox.information(self, "Success", f" Consultation completed for {name}.")
+            else:
+                QMessageBox.warning(self, "Warning", " Check-in first before consultation.")
+        except sqlite3.Error as e:
+            QMessageBox.critical(self, "Database Error", f"Failed to complete consultation: {str(e)}")
 
-        appointment_id = self.table.item(selected_row, 0).text()
+    def billing(self):
+        name, ok = QInputDialog.getText(self, "Billing & Payment (Cash Only)", "Enter your name:")
+        if not ok or not name:
+            return
+        try:
+            self.cursor.execute("""
+                SELECT id FROM appointments
+                WHERE LOWER(name) = LOWER(?) AND status = 'Consulted'
+            """, (name,))
+            result = self.cursor.fetchone()
+            if result:
+                appt_id = result[0]
+                self.cursor.execute("""
+                    UPDATE appointments SET payment = 'Paid'
+                    WHERE id = ?
+                """, (appt_id,))
+                self.conn.commit()
+                QMessageBox.information(self, "Success", f" {name}, you have paid in cash. Status updated to PAID.")
+            else:
+                QMessageBox.warning(self, "Warning", " Consultation not completed yet.")
+        except sqlite3.Error as e:
+            QMessageBox.critical(self, "Database Error", f"Failed to process billing: {str(e)}")
 
-        confirm = QMessageBox.question(
-            self,
-            "Confirm Cancel",
-            "Are you sure you want to cancel this appointment?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
+    def show_appointments(self):
+        try:
+            self.cursor.execute("""
+                SELECT * FROM appointments ORDER BY date, time
+            """)
+            rows = self.cursor.fetchall()
+            if not rows:
+                QMessageBox.information(self, "Appointments", "No appointments found.")
+                return
+            text = "\n".join([
+                f"ID: {row[0]}, Name: {row[1]}, Doctor: {row[2]}, Date: {row[3]}, Time: {row[4]}, Status: {row[5]}, Payment: {row[6]}"
+                for row in rows
+            ])
+            QMessageBox.information(self, "All Appointments", text)
+        except sqlite3.Error as e:
+            QMessageBox.critical(self, "Database Error", f"Failed to fetch appointments: {str(e)}")
 
-        if confirm == QMessageBox.Yes:
-            self.cursor.execute("DELETE FROM appointments WHERE id=?", (appointment_id,))
-            self.conn.commit()
-            QMessageBox.information(self, "Cancelled", "Appointment cancelled successfully!")
-            self.view_appointments()
-
-    def clear_inputs(self):
-        self.name_input.clear()
-        self.doctor_input.clear()
-        self.date_input.setDate(QDate.currentDate())  # reset to today
-        self.time_input.clear()
-
-    def closeEvent(self, event):
-        # Close DB when app closes
-        self.conn.close()
-        event.accept()
-
-
-if __name__ == "__main__":
+def main():
     app = QApplication(sys.argv)
     window = ClinicApp()
     window.show()
     sys.exit(app.exec_())
+
+if __name__ == "__main__":
+    main()
