@@ -1,157 +1,330 @@
 import sys
 import sqlite3
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QWidget, QLabel,
-                             QPushButton, QInputDialog, QMessageBox, QDialog, QFormLayout,
-                             QComboBox, QDateEdit, QTimeEdit, QLineEdit)
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
+    QLineEdit, QInputDialog, QMessageBox, QDialog, QFormLayout, QComboBox,
+    QDateEdit, QTimeEdit, QTableWidget, QTableWidgetItem, QHeaderView
+)
 from PyQt5.QtCore import Qt, QDate, QTime
 
+# ----------------- COLORS & DB -----------------
+MAIN_COLOR = "#008080"
+LIGHT_BG = "#ffffff"
+ADMIN_BG = "#004d4d"
+DB_FILE = "clinic_final.db"
+
+
+# ----------------- DATABASE INIT -----------------
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    # Users table
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE,
+            password TEXT,
+            role TEXT
+        )
+    """)
+    # Appointments table
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS appointments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT,
+            doctor TEXT,
+            date TEXT,
+            time TEXT,
+            status TEXT DEFAULT 'Booked',
+            payment TEXT DEFAULT 'Unpaid'
+        )
+    """)
+    # Create default admin if not exists
+    cur.execute("SELECT id FROM users WHERE role='Admin' LIMIT 1")
+    if not cur.fetchone():
+        cur.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
+                    ("admin", "admin123", "Admin"))
+    conn.commit()
+    conn.close()
+
+
+# ----------------- STYLES -----------------
+def button_style(bg=MAIN_COLOR, color="white"):
+    return f"""
+        QPushButton{{background:{bg};color:{color};border-radius:8px;padding:8px;font-weight:600;}}
+        QPushButton:hover{{background:#006666;}}
+    """
+
+
+# ----------------- BOOK APPOINTMENT DIALOG -----------------
 class BookDialog(QDialog):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.setWindowTitle("Book Appointment")
-        self.setFixedSize(300, 220)
+        self.setFixedSize(300, 200)
+        self.setStyleSheet(f"background:{LIGHT_BG};")
         layout = QFormLayout(self)
 
-        self.name = QLineEdit()
-        self.name.setPlaceholderText("Enter your full name")
         self.doctor = QComboBox()
         self.doctor.addItems(["Doctor A", "Doctor B", "Doctor C", "Doctor D"])
+
         self.date = QDateEdit(QDate.currentDate())
         self.date.setCalendarPopup(True)
-        self.time = QTimeEdit(QTime(9, 0))
 
-        layout.addRow("Name:", self.name)
+        self.time = QTimeEdit(QTime(9, 0))
+        self.time.setDisplayFormat("hh:mm AP")
+
         layout.addRow("Doctor:", self.doctor)
         layout.addRow("Date:", self.date)
         layout.addRow("Time:", self.time)
 
-        ok = QPushButton("Book")
-        ok.setStyleSheet("background-color: #28a745; color: white; padding: 5px; border-radius: 5px;")
-        ok.clicked.connect(self.accept)
-        layout.addWidget(ok)
+        btn = QPushButton("Book")
+        btn.setStyleSheet(button_style())
+        btn.clicked.connect(self.accept)
+        layout.addWidget(btn)
 
     def get_data(self):
-        return (self.name.text(), self.doctor.currentText(), self.date.date().toString("yyyy-MM-dd"), self.time.time().toString("hh:mm AP"))
+        return (
+            self.doctor.currentText(),
+            self.date.date().toString("yyyy-MM-dd"),
+            self.time.time().toString("hh:mm AP")
+        )
 
-class ClinicApp(QMainWindow):
+
+# ----------------- LOGIN WINDOW -----------------
+class LoginWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Clinic Appointment System")
-        self.setFixedSize(350, 550)
-
-        self.conn = sqlite3.connect("clinicers.db")
-        self.cursor = self.conn.cursor()
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS appointments (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT, doctor TEXT, date TEXT, time TEXT,
-                status TEXT DEFAULT 'Booked', payment TEXT DEFAULT 'Unpaid'
-            )
-        """)
+        self.setWindowTitle("Clinic Login")
+        self.setFixedSize(300, 250)
+        self.setStyleSheet(f"background:{LIGHT_BG};")
 
         layout = QVBoxLayout()
+
         title = QLabel("Clinic Appointment System")
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #2c3e50; margin: 15px;")
+        title.setStyleSheet(f"color:{MAIN_COLOR};font-size:16px;font-weight:bold;")
+
+        self.user = QLineEdit()
+        self.user.setPlaceholderText("Username")
+
+        self.passw = QLineEdit()
+        self.passw.setPlaceholderText("Password")
+        self.passw.setEchoMode(QLineEdit.Password)
+
+        self.btn_login = QPushButton("Login")
+        self.btn_reg = QPushButton("Register")
+        for b in (self.btn_login, self.btn_reg):
+            b.setStyleSheet(button_style())
+
         layout.addWidget(title)
+        layout.addWidget(self.user)
+        layout.addWidget(self.passw)
+        layout.addWidget(self.btn_login)
+        layout.addWidget(self.btn_reg)
 
-        buttons = [
-            ("Book Appointment", "#007bff", self.book),
-            ("Check-in", "#17a2b8", self.check_in),
-            ("Consultation", "#ffc107", self.consult),
-            ("Billing (Cash Only)", "#28a745", self.pay),
-            ("Cancel Appointment", "#dc3545", self.cancel),
-            ("Show Appointments", "#6c757d", self.show_all),
-            ("Exit", "#343a40", self.close)
-        ]
+        self.setLayout(layout)
 
-        for text, color, func in buttons:
-            btn = QPushButton(text)
-            btn.setStyleSheet(f"background-color: {color}; color: white; font-weight: bold; border-radius: 8px; padding: 10px;")
-            btn.clicked.connect(func)
-            layout.addWidget(btn)
+        self.btn_login.clicked.connect(self.login)
+        self.btn_reg.clicked.connect(self.register)
 
-        widget = QWidget()
-        widget.setStyleSheet("background-color: #ecf0f1; padding: 10px;")
-        widget.setLayout(layout)
-        self.setCentralWidget(widget)
+    def login(self):
+        name, pwd = self.user.text(), self.passw.text()
+        conn = sqlite3.connect(DB_FILE)
+        cur = conn.cursor()
+        cur.execute("SELECT role FROM users WHERE username=? AND password=?", (name, pwd))
+        data = cur.fetchone()
+        conn.close()
+
+        if data:
+            if data[0] == "Admin":
+                self.admin = AdminWindow()
+                self.admin.show()
+            else:
+                self.userwin = UserWindow(name)
+                self.userwin.show()
+            self.close()
+        else:
+            QMessageBox.warning(self, "Error", "Invalid credentials.")
+
+    def register(self):
+        name, pwd = self.user.text(), self.passw.text()
+        if not name or not pwd:
+            QMessageBox.warning(self, "Error", "Fields cannot be empty.")
+            return
+        role, ok = QInputDialog.getItem(self, "Select Role", "Choose role:", ["User", "Admin"], 0, False)
+        if ok:
+            conn = sqlite3.connect(DB_FILE)
+            cur = conn.cursor()
+            try:
+                cur.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", (name, pwd, role))
+                conn.commit()
+                QMessageBox.information(self, "Success", "Account created.")
+            except sqlite3.IntegrityError:
+                QMessageBox.warning(self, "Error", "Username already exists.")
+            conn.close()
+
+
+# ----------------- USER DASHBOARD -----------------
+class UserWindow(QWidget):
+    def __init__(self, username):
+        super().__init__()
+        self.username = username
+        self.setWindowTitle("User Dashboard")
+        self.setFixedSize(600, 400)
+        self.setStyleSheet(f"background:{LIGHT_BG};")
+
+        layout = QVBoxLayout()
+
+        title = QLabel(f"Welcome, {username}")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet(f"color:{MAIN_COLOR};font-weight:bold;font-size:16px;")
+
+        self.table = QTableWidget()
+        self.table.setStyleSheet("background:#f2f2f2; color:#000;")
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(["ID", "Doctor", "Date", "Time", "Status", "Payment"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
+        top_buttons = QHBoxLayout()
+        self.btn_book = QPushButton("Book Appointment")
+        self.btn_cancel = QPushButton("Cancel Appointment")
+        self.btn_logout = QPushButton("Logout")
+        for b in (self.btn_book, self.btn_cancel, self.btn_logout):
+            b.setStyleSheet(button_style())
+        top_buttons.addWidget(self.btn_book)
+        top_buttons.addWidget(self.btn_cancel)
+        top_buttons.addWidget(self.btn_logout)
+
+        layout.addWidget(title)
+        layout.addLayout(top_buttons)
+        layout.addWidget(self.table)
+        self.setLayout(layout)
+
+        self.btn_book.clicked.connect(self.book)
+        self.btn_cancel.clicked.connect(self.cancel_selected)
+        self.btn_logout.clicked.connect(self.close)
+
+        self.load_table()
+
+    def load_table(self):
+        conn = sqlite3.connect(DB_FILE)
+        cur = conn.cursor()
+        cur.execute("SELECT id, doctor, date, time, status, payment FROM appointments WHERE username=?", (self.username,))
+        rows = cur.fetchall()
+        conn.close()
+
+        self.table.setRowCount(len(rows))
+        for i, row in enumerate(rows):
+            for j, val in enumerate(row):
+                self.table.setItem(i, j, QTableWidgetItem(str(val)))
 
     def book(self):
-        dialog = BookDialog()
+        dialog = BookDialog(self)
         if dialog.exec_():
-            name, doctor, date, time = dialog.get_data()
-            if not name:
-                QMessageBox.warning(self, "Error", "Name cannot be empty.")
-                return
-
-            self.cursor.execute("SELECT * FROM appointments WHERE doctor=? AND date=? AND time=? AND status!='Cancelled'", (doctor, date, time))
-            if self.cursor.fetchone():
-                QMessageBox.warning(self, "Error", f"{doctor} is already booked at {time}.")
-                return
-
-            self.cursor.execute("INSERT INTO appointments (name, doctor, date, time) VALUES (?, ?, ?, ?)", (name, doctor, date, time))
-            self.conn.commit()
-            QMessageBox.information(self, "Success", f"Appointment booked for {name} with {doctor} on {date} at {time}.")
-
-    def check_in(self):
-        name, ok = QInputDialog.getText(self, "Check-in", "Enter your name:")
-        if ok and name:
-            self.cursor.execute("SELECT id FROM appointments WHERE LOWER(name)=LOWER(?) AND status='Booked'", (name,))
-            r = self.cursor.fetchone()
-            if r:
-                self.cursor.execute("UPDATE appointments SET status='Checked-in' WHERE id=?", (r[0],))
-                self.conn.commit()
-                QMessageBox.information(self, "Success", f"{name} is now checked in.")
+            doctor, date, time = dialog.get_data()
+            conn = sqlite3.connect(DB_FILE)
+            cur = conn.cursor()
+            # Check if slot is booked
+            cur.execute("SELECT id FROM appointments WHERE doctor=? AND date=? AND time=? AND status!='Cancelled'",
+                        (doctor, date, time))
+            if cur.fetchone():
+                QMessageBox.warning(self, "Error", "This time slot is already booked.")
             else:
-                QMessageBox.warning(self, "Error", "No booked appointment found.")
+                cur.execute("INSERT INTO appointments (username, doctor, date, time) VALUES (?, ?, ?, ?)",
+                            (self.username, doctor, date, time))
+                conn.commit()
+                QMessageBox.information(self, "Booked", "Appointment booked successfully.")
+            conn.close()
+            self.load_table()
 
-    def consult(self):
-        name, ok = QInputDialog.getText(self, "Consultation", "Enter your name:")
-        if ok and name:
-            self.cursor.execute("SELECT id FROM appointments WHERE LOWER(name)=LOWER(?) AND status='Checked-in'", (name,))
-            r = self.cursor.fetchone()
-            if r:
-                self.cursor.execute("UPDATE appointments SET status='Consulted' WHERE id=?", (r[0],))
-                self.conn.commit()
-                QMessageBox.information(self, "Success", f"Consultation completed for {name}.")
-            else:
-                QMessageBox.warning(self, "Error", "Please check-in first.")
+    def cancel_selected(self):
+        row = self.table.currentRow()
+        if row == -1:
+            QMessageBox.warning(self, "Error", "Select an appointment to cancel.")
+            return
+        aid = int(self.table.item(row, 0).text())
+        conn = sqlite3.connect(DB_FILE)
+        cur = conn.cursor()
+        cur.execute("UPDATE appointments SET status='Cancelled' WHERE id=? AND username=?", (aid, self.username))
+        conn.commit()
+        conn.close()
+        QMessageBox.information(self, "Cancelled", "Appointment cancelled.")
+        self.load_table()
 
-    def pay(self):
-        name, ok = QInputDialog.getText(self, "Billing", "Enter your name:")
-        if ok and name:
-            self.cursor.execute("SELECT id FROM appointments WHERE LOWER(name)=LOWER(?) AND status='Consulted'", (name,))
-            r = self.cursor.fetchone()
-            if r:
-                self.cursor.execute("UPDATE appointments SET payment='Paid' WHERE id=?", (r[0],))
-                self.conn.commit()
-                QMessageBox.information(self, "Success", f"{name}'s payment recorded (Cash Only).")
-            else:
-                QMessageBox.warning(self, "Error", "Consultation not yet done.")
 
-    def cancel(self):
-        name, ok = QInputDialog.getText(self, "Cancel Appointment", "Enter your name:")
-        if ok and name:
-            self.cursor.execute("SELECT id FROM appointments WHERE LOWER(name)=LOWER(?) AND status!='Cancelled'", (name,))
-            r = self.cursor.fetchone()
-            if r:
-                self.cursor.execute("UPDATE appointments SET status='Cancelled' WHERE id=?", (r[0],))
-                self.conn.commit()
-                QMessageBox.information(self, "Cancelled", f"{name}'s appointment has been cancelled.")
-            else:
-                QMessageBox.warning(self, "Error", "No active appointment found.")
+# ----------------- ADMIN DASHBOARD -----------------
+class AdminWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Admin Dashboard")
+        self.setFixedSize(700, 450)
+        self.setStyleSheet(f"background:{LIGHT_BG};color:#000;")
 
-    def show_all(self):
-        self.cursor.execute("SELECT * FROM appointments ORDER BY date, time")
-        rows = self.cursor.fetchall()
-        if rows:
-            text = "\n".join([f"{r[1]} | {r[2]} | {r[3]} {r[4]} | {r[5]} | {r[6]}" for r in rows])
-        else:
-            text = "No appointments found."
-        QMessageBox.information(self, "Appointments", text)
+        layout = QVBoxLayout()
 
-if __name__ == '__main__':
+        title = QLabel("Admin - Appointments")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color:#004d4d;font-weight:bold;font-size:16px;")
+
+        self.table = QTableWidget()
+        self.table.setStyleSheet("background:#f2f2f2; color:#000;")
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels(["ID", "Username", "Doctor", "Date", "Time", "Status", "Payment"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
+        top_buttons = QHBoxLayout()
+        self.btn_paid = QPushButton("Mark as Paid")
+        self.btn_unpaid = QPushButton("Mark as Unpaid")
+        self.btn_logout = QPushButton("Logout")
+        for b in (self.btn_paid, self.btn_unpaid, self.btn_logout):
+            b.setStyleSheet(button_style())
+        top_buttons.addWidget(self.btn_paid)
+        top_buttons.addWidget(self.btn_unpaid)
+        top_buttons.addWidget(self.btn_logout)
+
+        layout.addWidget(title)
+        layout.addLayout(top_buttons)
+        layout.addWidget(self.table)
+        self.setLayout(layout)
+
+        self.btn_paid.clicked.connect(lambda: self.update_payment("Paid"))
+        self.btn_unpaid.clicked.connect(lambda: self.update_payment("Unpaid"))
+        self.btn_logout.clicked.connect(self.close)
+
+        self.load_table()
+
+    def load_table(self):
+        conn = sqlite3.connect(DB_FILE)
+        cur = conn.cursor()
+        cur.execute("SELECT id, username, doctor, date, time, status, payment FROM appointments ORDER BY date, time")
+        rows = cur.fetchall()
+        conn.close()
+
+        self.table.setRowCount(len(rows))
+        for i, row in enumerate(rows):
+            for j, val in enumerate(row):
+                self.table.setItem(i, j, QTableWidgetItem(str(val)))
+
+    def update_payment(self, status):
+        row = self.table.currentRow()
+        if row == -1:
+            QMessageBox.warning(self, "Error", "Select an appointment first.")
+            return
+        aid = int(self.table.item(row, 0).text())
+        conn = sqlite3.connect(DB_FILE)
+        cur = conn.cursor()
+        cur.execute("UPDATE appointments SET payment=? WHERE id=?", (status, aid))
+        conn.commit()
+        conn.close()
+        QMessageBox.information(self, "Updated", f"Appointment #{aid} marked as {status}.")
+        self.load_table()
+
+
+# ----------------- MAIN -----------------
+if __name__ == "__main__":
+    init_db()
     app = QApplication(sys.argv)
-    window = ClinicApp()
-    window.show()
+    win = LoginWindow()
+    win.show()
     sys.exit(app.exec_())
